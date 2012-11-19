@@ -34,7 +34,8 @@ things like:
 Note that MySQL's table/column name quoting rules differ from
 standard SQL; MySQL (and this tool) by default uses the
 backtick character:  `   to quote table names, not the
-double quote used in other SQL systems.
+double quote used in other SQL systems. Use the --quote option
+to fix this.
 
 
 Headerless CSV files
@@ -67,13 +68,14 @@ slug_re = re.compile(r'[^A-Za-z0-9_-]')
 
 def slug(s): return slug_re.sub("", s)
 
-def setup_table(tbl, cols):
-   print "create table `%s` (\n%s\n);" % (tbl, cols)
+def setup_table(tbl, cols, quote_table_name):
+   print "create table %s%s%s (\n%s\n);" % (quote_table_name, tbl, 
+                                            quote_table_name, cols)
 
 col_disambig_counter = 0
 used_column_names = []
 
-def get_cols(fieldnames, tbl, field_sizes, intcols=[]):
+def get_cols(fieldnames, tbl, field_sizes, quote_table_name, intcols=[]):
    colnames = [ slug(field) for field in fieldnames ]
 
    for i in intcols:
@@ -105,21 +107,22 @@ def get_cols(fieldnames, tbl, field_sizes, intcols=[]):
 
       slugged = slug(col)
       if col in intcols:
-         return "  `%s` integer" % (slugged)
+         return "  %s%s%s integer" % (quote_table_name, slugged, quote_table_name)
       else:
-         return "  `%s` varchar(%d)" % (slugged, size)
+         return "  %s%s%s varchar(%d)" % (quote_table_name, slugged, 
+                                          quote_table_name, size)
 
    coldefs = [ colinfo(col_index) for col_index in range(0, len(fieldnames)) ]
 
    cols = ", \n".join(coldefs)
    return cols
 
-def process(csv, tbl, batch_size, intcols):
+def process(csv, tbl, batch_size, intcols, quote_table_name):
    fieldnames = csv.fieldnames
 
-   cols = get_cols(fieldnames, tbl, csv.field_sizes, intcols)
+   cols = get_cols(fieldnames, tbl, csv.field_sizes, quote_table_name, intcols)
 
-   setup_table(tbl, cols)
+   setup_table(tbl, cols, quote_table_name)
 
 
 class CSV(object):
@@ -176,6 +179,9 @@ def run():
                      help="make integer column", default=[])
    parser.add_option("-d", "--docs", dest="documentation", action="store_true",
                      help="display documentation")
+   parser.add_option("--quote", dest="quote_table_name",
+                     default="`",
+                     help="quote character for SQL table names")
 
    (options, args) = parser.parse_args()
 
@@ -201,7 +207,7 @@ def run():
 
    csv = CSV(sys.stdin, delimiter=delimiter, limit=limit)
 
-   process(csv, table, 1000, options.intcols)
+   process(csv, table, 1000, options.intcols, options.quote_table_name)
 
 if __name__ == '__main__':
    run()
