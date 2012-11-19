@@ -1,0 +1,207 @@
+#!/usr/bin/env python
+
+"""
+
+(c) Martin Keegan 2012; this code may be distributed under the
+terms of the GNU General Public Licence, v2
+
+csv2sql
+=======
+
+This tool is misnamed: it emits a MySQL CREATE TABLE statement
+to fit a CSV file.
+
+Usage: csv2sql -t name_of_table -s '\t' < filename.csv
+
+The `-t' option specifies the name of the table to create.
+
+The `-s' option specifies the character to use as a field
+separator. This may be done in Python's string representation
+format, which basically means that you can use \t to make
+a tab character, but beware that backslashes must be quoted
+to protect them from bash.
+
+The '-i' option allows you to specify that a column should be
+an integer not a string. You can use this option multiple
+times, .e.g, -i Age_at_birth -i Age_at_death
+
+csv2sql reads its input from stdin. This means you can do
+things like:
+
+ head -10000 example.csv | csv2sql -t example -s , -i f1 -i f2
+
+
+Note that MySQL's table/column name quoting rules differ from
+standard SQL; MySQL (and this tool) by default uses the
+backtick character:  `   to quote table names, not the
+double quote used in other SQL systems.
+
+
+Headerless CSV files
+--------------------
+
+If you have a long CSV file which does not have a header line, you
+can prepend one in bash with (e.g.):
+
+ $ (echo "firstname,surname,date_of_birth,image_id,etc" ; cat path_to_file.csv) | ./csv2sql --options
+
+Remember to verify your MySQL LOAD statement when trying to be
+clever with headers; check that "IGNORE 1 LINES" is present or
+absent as it needs to be.
+"""
+
+from optparse import OptionParser
+import csv
+import sys
+import math
+import re
+import random
+
+import logging
+
+log = logging.getLogger(__name__)
+
+# Generically convert CSV files to SQL
+
+slug_re = re.compile(r'[^A-Za-z0-9_-]')
+
+def slug(s): return slug_re.sub("", s)
+
+def setup_table(tbl, cols):
+   print "create table `%s` (\n%s\n);" % (tbl, cols)
+
+col_disambig_counter = 0
+used_column_names = []
+
+def get_cols(fieldnames, tbl, field_sizes, intcols=[]):
+   colnames = [ slug(field) for field in fieldnames ]
+
+   for i in intcols:
+      if not i in fieldnames:
+         print i
+         print fieldnames
+      assert i in fieldnames
+
+
+   def colinfo(col_index):
+      global col_disambig_counter, used_column_names
+      col_disambig_counter += 1
+      try:
+         fs = field_sizes[col_index]
+      except:
+         raise
+
+      size = int(math.ceil(fs * 1.25))
+
+      col = fieldnames[col_index]
+
+      if col == '':
+         col = "untitled"
+
+      if col in used_column_names:
+         col += "_%d" % col_disambig_counter
+
+      used_column_names.append(col)
+
+      slugged = slug(col)
+      if col in intcols:
+         return "  `%s` integer" % (slugged)
+      else:
+         return "  `%s` varchar(%d)" % (slugged, size)
+
+   coldefs = [ colinfo(col_index) for col_index in range(0, len(fieldnames)) ]
+
+   cols = ", \n".join(coldefs)
+   return cols
+
+def process(csv, tbl, batch_size, intcols):
+   fieldnames = csv.fieldnames
+
+   cols = get_cols(fieldnames, tbl, csv.field_sizes, intcols)
+
+   setup_table(tbl, cols)
+
+
+class CSV(object):
+   def __init__(self, fh, delimiter=",", limit=None):
+      self.csv = csv.reader(fh, delimiter=delimiter)
+      self.data = []
+
+      self.fieldnames = self.csv.next()
+
+      if self.fieldnames is None:
+         # we may have got an empty file, or similar problem
+         print >>sys.stderr, "CSV file seems to be empty or lack a header row"
+         sys.exit(1)
+
+      if len(self.fieldnames) <= 1:
+         print >>sys.stderr, "Did not detect multiple fields; is this a CSV?"
+
+      self.field_sizes = [ 0 for i in self.fieldnames ]
+
+      count = 0
+      for r in self.csv:
+         count += 1
+
+         missing = len(self.fieldnames) - len(r)
+         if missing > 0:
+            r.extend([""] * missing)
+
+         for i in range(0, len(self.fieldnames)):
+            try:
+               cell_len = len(r[i]) #?
+            except IndexError:
+               print >>sys.stderr, count
+               print >>sys.stderr, i
+               print >>sys.stderr, r
+               print >>sys.stderr, len(r)
+               print >>sys.stderr, len(self.fieldnames)
+               raise
+            current_field_len = self.field_sizes[i]
+            self.field_sizes[i] = max(cell_len, current_field_len)
+
+         if limit is not None and limit <= count:
+            break
+
+
+def run():
+   parser = OptionParser()
+   parser.add_option("-t", "--table", dest="table",
+                     help="table name to insert into")
+   parser.add_option("-s", "--separator", dest="separator",
+                     help="separator for new csv file")
+   parser.add_option("-l", "--limit", dest="limit",
+                     help="maximum number of lines to import")
+   parser.add_option("-i", "--int-columns", dest="intcols", action="append",
+                     help="make integer column", default=[])
+   parser.add_option("-d", "--docs", dest="documentation", action="store_true",
+                     help="display documentation")
+
+   (options, args) = parser.parse_args()
+
+   if options.documentation:
+      print __doc__
+      sys.exit(0)
+
+   delimiter = options.separator or ','
+
+   if len(delimiter) > 1:
+      delimiter = delimiter.decode('string-escape')
+
+   if options.table is None:
+      print >>sys.stderr, "You must specify the name of the table to create, with --table=name"
+      sys.exit(1)
+
+   table = slug(options.table)
+
+   try:
+      limit = int(options.limit)
+   except:
+      limit = None
+
+   csv = CSV(sys.stdin, delimiter=delimiter, limit=limit)
+
+   process(csv, table, 1000, options.intcols)
+
+if __name__ == '__main__':
+   run()
